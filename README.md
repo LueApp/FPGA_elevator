@@ -52,30 +52,38 @@ if(!floor1&&!key[0])begin
 end
 ```
 现在先考虑实现3秒运行、0.1秒间隔计时、每0.6秒点亮一个流水灯、前2秒显示前一楼层后1秒显示新楼层等功能。很容易想到使用计数的方式实现，并采用它们的最大因数100ms作为时钟信号。使用变量cnt对时钟信号进行计数，当计数到30时即完整运行了3秒。为了保障计数准确，我们在检测到“上行”、“下行”命令有效时便对cnt进行初始化赋零，计数到30后也进行清零。  
-引出了cnt之后，我们可以开始考虑冲突问题了。首先可以想到，为了对上行和下行时间分别计算，我们将由一个变量cnt计算运行时间改为分别用cnt1计算上行时间和用cnt2计算下行时间。显然，如果电梯正在上行即cnt1值介于0和30之间，“下行”类按键按下后，cnt2应先初始化赋零然后等到cnt1计算到30后清零，此时才能开始计数。如何让cnt2挂机后再进行计算呢？我们再引入新的标志量EN1和EN2。当有“上行”类按键按下并且指令有效（即前面说的floor2为0）时，将EN1赋值为1，表示有上行指令需要运行，直到上行结束即cnt1计数到30才重新将EN1赋值为0。EN2同理。因此我们可以做出以下判断：（1）当只有EN1有效（为1）时，对上行时间进行计数即对cnt1进行累加；（2）当只有EN2有效时，对下行时间进行计数即对cnt2进行累加；（3）当EN1和EN2同时有效时，由于上行按键和下行按键按下有时间差，那么cnt1和cnt2不会相同，且后按下的按键对应的计数值此时应该为0，则值更大的是更早按下的，此时我们应对值大的那个进行计数。应该注意到的是，在进行计数的时候应同时将对应的楼层状态量进行赋零，防止未能及时检测到有效输入。至此，冲突问题解决，上述实现代码如下：  
+引出了cnt之后，我们可以开始考虑冲突问题了。首先可以想到，为了对上行和下行时间分别计算，我们将由一个变量cnt计算运行时间改为分别用cnt1计算上行时间和用cnt2计算下行时间。显然，如果电梯正在上行即cnt1值介于0和30之间，“下行”类按键按下后，cnt2应先初始化赋零然后等到cnt1计算到30后清零，此时才能开始计数。如何让cnt2挂机后再进行计算呢？我们再引入新的标志量EN1和EN2。当有“上行”类按键按下并且指令有效（即前面说的floor2为0）时，将EN1赋值为1，表示有上行指令需要运行，直到上行结束即cnt1计数到30才重新将EN1赋值为0。EN2同理。因此我们可以做出以下判断：（1）当只有EN1有效（为1）时，对上行时间进行计数即对cnt1进行累加；（2）当只有EN2有效时，对下行时间进行计数即对cnt2进行累加；（3）当EN1和EN2同时有效时，由于上行按键和下行按键按下有时间差，那么cnt1和cnt2不会相同，且后按下的按键对应的计数值此时应该为0，则值更大的是更早按下的，此时我们应对值大的那个进行计数。应该注意到的是，在进行计数的时候应同时将对应的楼层状态量进行赋零，防止未能及时检测到有效输入。至此，冲突问题解决。解决冲突问题后，我们可以也自然而然地可以对电梯的三种状态（即待机、上行和下行）进行判断，使用state变量表示，为0代表待机，1代表上行，2代表下行。上述实现代码如下：  
 ```Verilog
+//无需等待上行和下行
+if(!EN1&&!EN2) begin
+    state=0;
+end
 //同时有上行和下行的需求
 if(EN1&&EN2)begin
     //在上行
     if(cnt1>cnt2)begin
         cnt1=cnt1+1;
         floor1=0;
+        state=1;
     end
     //在下行
     else begin
         cnt2=cnt2+1;
         floor2=0;
+        state=2;
     end
 end
 //在上行
 else if(EN1)begin
     cnt1=cnt1+1;
     floor1=0;
+    state=1;
 end
 //在下行
 else if(EN2)begin
     cnt2=cnt2+1;
     floor2=0;
+    state=2;
 end
 ```
 考虑按键对应的LED灯。在根据标志量floor1和floor2判断按键按下功能有效后，我们就可以直接点亮对应的LED灯；在cnt1计数到30后，LED3和LED1同时设置为熄灭即可，不需要考虑原本亮着的是哪个；在cnt2计数到30后，LED2和LED0同时设置为熄灭。由此可以完善按键是否有效的检测代码以及清零部分代码如下：  
@@ -160,12 +168,13 @@ always@(posedge clk_beep)begin
     else beep=0;
 end
 ```
-考虑3秒计时器和楼层显示。两者都只需要通过对cnt1和cnt2的值进行判断，并使用数码管直接显示。需要注意的是应该对计时器的小数点单独进行控制。实现部分代码如下：  
+考虑3秒计时器和楼层、状态显示。前两者都只需要通过对cnt1和cnt2的值进行判断，并使用数码管直接显示。后者只需要对前面定义的state进行判断即可。需要注意的是应该对计时器的小数点单独进行控制。同时，为了实现状态输出时分别显示一条横杆，在数字位判断中使用10及以外的数字表示3个状态。部分代码如下：
 顶层文件中：  
 ```verilog
 decoder_7seg dec(
     .cnt(cnt1+cnt2),    //计时显示，由于二者不同时计数即至少有一个为0，因此取加
     .floor(datashow),   //楼层显示
+    .sta(state),      //状态显示
     .seg(seg),
     .dig(dig),
     .clkin(clkin)
@@ -189,21 +198,46 @@ always@(posedge clk)begin
         showdata=floor;
         seg[0]=0;
     end
-    //计时个位
-    else if(state==1)begin
+    //状态显示
+    if(state==1)begin
         state<=2;
+        dig=6'b111101;
+        showdata=10+sta;
+        seg[0]=0;
+    end
+    //计时个位
+    else if(state==2)begin
+        state<=3;
         dig=6'b011111;
         showdata=cnt/10;
         seg[0]=1;   //小数点位单独判断
     end
     //计时十分位
-    else if(state==2)begin
+    else if(state==3)begin
         state<=0;
         dig=6'b101111;
         showdata=cnt%10;
         seg[0]=0;
     end
 end
+//数字位判断
+always@(showdata)
+    case(showdata)
+        4'b0000: seg[7:1] = 7'b1111110;
+        4'b0001: seg[7:1] = 7'b0110000;
+        4'b0010: seg[7:1] = 7'b1101101;
+        4'b0011: seg[7:1] = 7'b1111001;
+        4'b0100: seg[7:1] = 7'b0110011;
+        4'b0101: seg[7:1] = 7'b1011011;
+        4'b0110: seg[7:1] = 7'b0011111;
+        4'b0111: seg[7:1] = 7'b1110000;
+        4'b1000: seg[7:1] = 7'b1111111;
+        4'b1001: seg[7:1] = 7'b1110011;
+        4'b1010: seg[7:1] = 7'b0000001; //使用10及以外的数字表示3个状态
+        4'b1011: seg[7:1] = 7'b1000000;
+        4'b1100: seg[7:1] = 7'b0001000;
+        default: seg[7:1] = 7'b0000000;
+    endcase
 ```
 至此，设计所有功能均能完成。附录中给出完整代码，需要注意的是，为了让流水灯功能实现更加贴近真实情况，笔者在约束文件中将流水灯到为LED12到16，使其上下流动而非左右流动。  
 ## 附录：完整代码
@@ -222,8 +256,9 @@ module top(
     );
     wire clk_100ms,clk_btn,clk_beep;    //100ms时钟，按键扫描时钟，蜂鸣器频率时钟
     wire [3:0]key;
-    integer floor1=1,floor2=0,cnt1=0,cnt2=0,EN1=0,EN2=0,datashow=0,rst=0;
+    integer floor1=1,floor2=0,cnt1=0,cnt2=0,EN1=0,EN2=0,datashow=0,rst=0,state=0;
     //floor1:1为在1楼 0为不在1楼 cnt1:上楼计数 EN1:1为（等待）上行中
+    //state:0 待机 1 上行状态 2 下行状态
     assign row[3:0]=4'b1110;
     s_div clk(
         .clkin(clkin),
@@ -234,6 +269,7 @@ module top(
     decoder_7seg dec(
         .cnt(cnt1+cnt2),    //计时显示，由于二者不同时计数即至少有一个为0，因此取加
         .floor(datashow),   //楼层显示
+        .sta(state),      //状态显示
         .seg(seg),
         .dig(dig),
         .clkin(clkin)
@@ -298,6 +334,10 @@ module top(
                 cnt2=0;
             end
         end
+        //无需等待上行和下行
+        if(!EN1&&!EN2) begin
+            state=0;
+        end
         //无需等待上行，将上行计数清零，将等待上行显示灯熄灭
         if(!EN1) begin
             cnt1=0;
@@ -316,22 +356,26 @@ module top(
             if(cnt1>cnt2)begin
                 cnt1=cnt1+1;
                 floor1=0;
+                state=1;
             end
             //在下行
             else begin
                 cnt2=cnt2+1;
                 floor2=0;
+                state=2;
             end
         end
         //在上行
         else if(EN1)begin
             cnt1=cnt1+1;
             floor1=0;
+            state=1;
         end
         //在下行
         else if(EN2)begin
             cnt2=cnt2+1;
             floor2=0;
+            state=2;
         end
         //楼层显示
         if(0<cnt1&&cnt1<20)datashow=1;
@@ -419,6 +463,7 @@ endmodule
 module decoder_7seg (    
     input [4:0] cnt,    //计时
     input [1:0] floor,  //楼层
+    input [1:0] sta,  //状态
     output reg [7:0] seg,
     output reg [5:0] dig,
     input clkin
@@ -444,15 +489,22 @@ module decoder_7seg (
             showdata=floor;
             seg[0]=0;
         end
-        //计时个位
-        else if(state==1)begin
+        //状态显示
+        if(state==1)begin
             state<=2;
+            dig=6'b111101;
+            showdata=10+sta;
+            seg[0]=0;
+        end
+        //计时个位
+        else if(state==2)begin
+            state<=3;
             dig=6'b011111;
             showdata=cnt/10;
             seg[0]=1;   //小数点位单独判断
         end
         //计时十分位
-        else if(state==2)begin
+        else if(state==3)begin
             state<=0;
             dig=6'b101111;
             showdata=cnt%10;
@@ -472,6 +524,9 @@ module decoder_7seg (
             4'b0111: seg[7:1] = 7'b1110000;
             4'b1000: seg[7:1] = 7'b1111111;
             4'b1001: seg[7:1] = 7'b1110011;
+            4'b1010: seg[7:1] = 7'b0000001; //使用10及以外的数字表示3个状态
+            4'b1011: seg[7:1] = 7'b1000000;
+            4'b1100: seg[7:1] = 7'b0001000;
             default: seg[7:1] = 7'b0000000;
         endcase
 endmodule
